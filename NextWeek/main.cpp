@@ -51,11 +51,8 @@ static const char g_simpleShaders[] =
 "cbuffer cbuf \n" \
 "{ \n" \
 "  float4 g_vQuadRect; \n" \
-"  int g_UseCase; \n" \
 "} \n" \
 "Texture2D g_Texture2D; \n" \
-"Texture3D g_Texture3D; \n" \
-"TextureCube g_TextureCube; \n" \
 "\n" \
 "SamplerState samLinear{ \n" \
 "    Filter = MIN_MAG_LINEAR_MIP_POINT; \n" \
@@ -75,35 +72,21 @@ static const char g_simpleShaders[] =
 "    \n" \
 "    f.Pos = float4( g_vQuadRect.xy + f.Tex * g_vQuadRect.zw, 0, 1);\n" \
 "    \n" \
-"    if (g_UseCase == 1) { \n"\
 "        if (vertexId == 1) f.Tex.z = 0.5f; \n"\
 "        else if (vertexId == 2) f.Tex.z = 0.5f; \n"\
 "        else if (vertexId == 3) f.Tex.z = 1.f; \n"\
-"    } \n" \
-"    else if (g_UseCase >= 2) { \n"\
-"        f.Tex.xy = f.Tex.xy * 2.f - 1.f; \n"\
-"    } \n" \
 "    return f;\n" \
 "}\n" \
 "\n" \
 "float4 PS( Fragment f ) : SV_Target\n" \
 "{\n" \
-"    if (g_UseCase == 0) return g_Texture2D.Sample( samLinear, f.Tex.xy ); \n" \
-"    else if (g_UseCase == 1) return g_Texture3D.Sample( samLinear, f.Tex ); \n" \
-"    else if (g_UseCase == 2) return g_TextureCube.Sample( samLinear, float3(f.Tex.xy, 1.0) ); \n" \
-"    else if (g_UseCase == 3) return g_TextureCube.Sample( samLinear, float3(f.Tex.xy, -1.0) ); \n" \
-"    else if (g_UseCase == 4) return g_TextureCube.Sample( samLinear, float3(1.0, f.Tex.xy) ); \n" \
-"    else if (g_UseCase == 5) return g_TextureCube.Sample( samLinear, float3(-1.0, f.Tex.xy) ); \n" \
-"    else if (g_UseCase == 6) return g_TextureCube.Sample( samLinear, float3(f.Tex.x, 1.0, f.Tex.y) ); \n" \
-"    else if (g_UseCase == 7) return g_TextureCube.Sample( samLinear, float3(f.Tex.x, -1.0, f.Tex.y) ); \n" \
-"    else return float4(f.Tex, 1);\n" \
+"    return g_Texture2D.Sample( samLinear, f.Tex.xy ); \n" \
 "}\n" \
 "\n";
 
 struct ConstantBuffer
 {
     float   vQuadRect[4];
-    int     UseCase;
 };
 
 ID3D11VertexShader* g_pVertexShader;
@@ -125,8 +108,8 @@ bool g_bPassed = true;
 int* pArgc = NULL;
 char** pArgv = NULL;
 
-const unsigned int g_WindowWidth = 720;
-const unsigned int g_WindowHeight = 720;
+const unsigned int g_WindowWidth = 512;
+const unsigned int g_WindowHeight = 512;
 
 int g_iFrameToCompare = 10;
 
@@ -140,48 +123,18 @@ struct
     size_t                  pitch;
     int                     width;
     int                     height;
-#ifndef USEEFFECT
     int                     offsetInShader;
-#endif
 } g_texture_2d;
 
-// Data structure for volume textures shared between DX10 and CUDA
-struct
-{
-    ID3D11Texture3D* pTexture;
-    ID3D11ShaderResourceView* pSRView;
-    cudaGraphicsResource* cudaResource;
-    void* cudaLinearMemory;
-    size_t                  pitch;
-    int                     width;
-    int                     height;
-    int                     depth;
-#ifndef USEEFFECT
-    int                     offsetInShader;
-#endif
-} g_texture_3d;
 
-// Data structure for cube texture shared between DX10 and CUDA
-struct
-{
-    ID3D11Texture2D* pTexture;
-    ID3D11ShaderResourceView* pSRView;
-    cudaGraphicsResource* cudaResource;
-    void* cudaLinearMemory;
-    size_t                  pitch;
-    int                     size;
-#ifndef USEEFFECT
-    int                     offsetInShader;
-#endif
-} g_texture_cube;
 
 // The CUDA kernel launchers that get called
 extern "C"
 {
     bool cuda_texture_2d(void* surface, size_t width, size_t height, size_t pitch, float t);
-    bool cuda_texture_3d(void* surface, int width, int height, int depth, size_t pitch, size_t pitchslice, float t);
-    bool cuda_texture_cube(void* surface, int width, int height, size_t pitch, int face, float t);
-    bool cuda_texture_raytracing(void* surface, size_t width, size_t height);
+    void cuda_raytracing_init(int width, int height);
+    void cuda_raytracing_render(void * surface, int width, int height, size_t pitch);
+    void cuda_raytracing_release();
 }
 
 
@@ -358,7 +311,7 @@ int main(int argc, char* argv[])
     int xBorder = ::GetSystemMetrics(SM_CXSIZEFRAME);
     int yMenu = ::GetSystemMetrics(SM_CYMENU);
     int yBorder = ::GetSystemMetrics(SM_CYSIZEFRAME);
-    HWND hWnd = CreateWindow(wc.lpszClassName, "CUDA/D3D11 Texture InterOP",
+    HWND hWnd = CreateWindow(wc.lpszClassName, "Raytracing",
         WS_OVERLAPPEDWINDOW, 0, 0, g_WindowWidth + 2 * xBorder, g_WindowHeight + 2 * yBorder + yMenu,
         NULL, NULL, wc.hInstance, NULL);
 
@@ -380,28 +333,10 @@ int main(int argc, char* argv[])
         cudaMallocPitch(&g_texture_2d.cudaLinearMemory, &g_texture_2d.pitch, g_texture_2d.width * sizeof(float) * 4, g_texture_2d.height);
         getLastCudaError("cudaMallocPitch (g_texture_2d) failed");
         cudaMemset(g_texture_2d.cudaLinearMemory, 1, g_texture_2d.pitch * g_texture_2d.height);
-
-        // CUBE
-        cudaGraphicsD3D11RegisterResource(&g_texture_cube.cudaResource, g_texture_cube.pTexture, cudaGraphicsRegisterFlagsNone);
-        getLastCudaError("cudaGraphicsD3D11RegisterResource (g_texture_cube) failed");
-        // create the buffer. pixel fmt is DXGI_FORMAT_R8G8B8A8_SNORM
-        cudaMallocPitch(&g_texture_cube.cudaLinearMemory, &g_texture_cube.pitch, g_texture_cube.size * 4, g_texture_cube.size);
-        getLastCudaError("cudaMallocPitch (g_texture_cube) failed");
-        cudaMemset(g_texture_cube.cudaLinearMemory, 1, g_texture_cube.pitch * g_texture_cube.size);
-        getLastCudaError("cudaMemset (g_texture_cube) failed");
-
-        // 3D
-        cudaGraphicsD3D11RegisterResource(&g_texture_3d.cudaResource, g_texture_3d.pTexture, cudaGraphicsRegisterFlagsNone);
-        getLastCudaError("cudaGraphicsD3D11RegisterResource (g_texture_3d) failed");
-        // create the buffer. pixel fmt is DXGI_FORMAT_R8G8B8A8_SNORM
-        //cudaMallocPitch(&g_texture_3d.cudaLinearMemory, &g_texture_3d.pitch, g_texture_3d.width * 4, g_texture_3d.height * g_texture_3d.depth);
-        cudaMalloc(&g_texture_3d.cudaLinearMemory, g_texture_3d.width * 4 * g_texture_3d.height * g_texture_3d.depth);
-        g_texture_3d.pitch = g_texture_3d.width * 4;
-        getLastCudaError("cudaMallocPitch (g_texture_3d) failed");
-        cudaMemset(g_texture_3d.cudaLinearMemory, 1, g_texture_3d.pitch * g_texture_3d.height * g_texture_3d.depth);
-        getLastCudaError("cudaMemset (g_texture_3d) failed");
     }
 
+
+    cuda_raytracing_init(g_texture_2d.width, g_texture_2d.height);
     //
     // the main loop
     //
@@ -429,6 +364,7 @@ int main(int argc, char* argv[])
         }
 
     };
+    cuda_raytracing_release();
 
     // Release D3D Library (after message loop)
     dynlinkUnloadD3D11API();
@@ -609,8 +545,8 @@ HRESULT InitTextures()
     //
     // 2D texture
     {
-        g_texture_2d.width = 256;
-        g_texture_2d.height = 256;
+        g_texture_2d.width = 720;
+        g_texture_2d.height = 720;
 
         D3D11_TEXTURE2D_DESC desc;
         ZeroMemory(&desc, sizeof(D3D11_TEXTURE2D_DESC));
@@ -635,80 +571,6 @@ HRESULT InitTextures()
         g_texture_2d.offsetInShader = 0; // to be clean we should look for the offset from the shader code
         g_pd3dDeviceContext->PSSetShaderResources(g_texture_2d.offsetInShader, 1, &g_texture_2d.pSRView);
     }
-     // 3D texture
-    {
-        g_texture_3d.width = 64;
-        g_texture_3d.height = 64;
-        g_texture_3d.depth = 64;
-
-        D3D11_TEXTURE3D_DESC desc;
-        ZeroMemory(&desc, sizeof(D3D11_TEXTURE3D_DESC));
-        desc.Width = g_texture_3d.width;
-        desc.Height = g_texture_3d.height;
-        desc.Depth = g_texture_3d.depth;
-        desc.MipLevels = 1;
-        desc.Format = DXGI_FORMAT_R8G8B8A8_SNORM;
-        desc.Usage = D3D11_USAGE_DEFAULT;
-        desc.BindFlags = D3D11_BIND_SHADER_RESOURCE;
-
-        if (FAILED(g_pd3dDevice->CreateTexture3D(&desc, NULL, &g_texture_3d.pTexture)))
-        {
-            return E_FAIL;
-        }
-
-        if (FAILED(g_pd3dDevice->CreateShaderResourceView(g_texture_3d.pTexture, NULL, &g_texture_3d.pSRView)))
-        {
-            return E_FAIL;
-        }
-
-#ifdef USEEFFECT
-        g_pTexture3D->SetResource(g_texture_3d.pSRView);
-#else
-        g_texture_3d.offsetInShader = 1; // to be clean we should look for the offset from the shader code
-        g_pd3dDeviceContext->PSSetShaderResources(g_texture_3d.offsetInShader, 1, &g_texture_3d.pSRView);
-#endif
-    }
-
-    // cube texture
-    {
-        g_texture_cube.size = 64;
-
-        D3D11_TEXTURE2D_DESC desc;
-        ZeroMemory(&desc, sizeof(D3D11_TEXTURE2D_DESC));
-        desc.Width = g_texture_cube.size;
-        desc.Height = g_texture_cube.size;
-        desc.MipLevels = 1;
-        desc.ArraySize = 6;
-        desc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
-        desc.SampleDesc.Count = 1;
-        desc.Usage = D3D11_USAGE_DEFAULT;
-        desc.BindFlags = D3D11_BIND_SHADER_RESOURCE;
-        desc.MiscFlags = D3D11_RESOURCE_MISC_TEXTURECUBE;
-
-        if (FAILED(g_pd3dDevice->CreateTexture2D(&desc, NULL, &g_texture_cube.pTexture)))
-        {
-            return E_FAIL;
-        }
-
-        D3D11_SHADER_RESOURCE_VIEW_DESC SRVDesc;
-        ZeroMemory(&SRVDesc, sizeof(SRVDesc));
-        SRVDesc.Format = desc.Format;
-        SRVDesc.ViewDimension = D3D11_SRV_DIMENSION_TEXTURECUBE;
-        SRVDesc.TextureCube.MipLevels = desc.MipLevels;
-        SRVDesc.TextureCube.MostDetailedMip = 0;
-
-        if (FAILED(g_pd3dDevice->CreateShaderResourceView(g_texture_cube.pTexture, &SRVDesc, &g_texture_cube.pSRView)))
-        {
-            return E_FAIL;
-        }
-
-#ifdef USEEFFECT
-        g_pTextureCube->SetResource(g_texture_cube.pSRView);
-#else
-        g_texture_cube.offsetInShader = 2; // to be clean we should look for the offset from the shader code
-        g_pd3dDeviceContext->PSSetShaderResources(g_texture_cube.offsetInShader, 1, &g_texture_cube.pSRView);
-#endif
-    }
 
     return S_OK;
 }
@@ -726,8 +588,11 @@ void RunKernels()
         cudaGraphicsSubResourceGetMappedArray(&cuArray, g_texture_2d.cudaResource, 0, 0);
         getLastCudaError("cudaGraphicsSubResourceGetMappedArray (cuda_texture_2d) failed");
 
-        // kick off the kernel and send the staging buffer cudaLinearMemory as an argument to allow the kernel to write to it
-        cuda_texture_2d(g_texture_2d.cudaLinearMemory, g_texture_2d.width, g_texture_2d.height, g_texture_2d.pitch, t);
+        //// kick off the kernel and send the staging buffer cudaLinearMemory as an argument to allow the kernel to write to it
+        //cuda_texture_2d(g_texture_2d.cudaLinearMemory, g_texture_2d.width, g_texture_2d.height, g_texture_2d.pitch, 0.0f);
+        //getLastCudaError("cuda_texture_2d failed");
+
+        cuda_raytracing_render(g_texture_2d.cudaLinearMemory, g_texture_2d.width, g_texture_2d.height, g_texture_2d.pitch);
         getLastCudaError("cuda_texture_2d failed");
 
         // then we want to copy cudaLinearMemory to the D3D texture, via its mapped form : cudaArray
@@ -752,7 +617,7 @@ bool DrawScene()
     float ClearColor[4] = { 0.5f, 0.5f, 0.6f, 1.0f };
     g_pd3dDeviceContext->ClearRenderTargetView(g_pSwapChainRTV, ClearColor);
 
-    float quadRect[4] = { -0.9f, -0.9f, 0.7f , 0.7f };
+    float quadRect[4] = { -1.0f, -1.0f, 2.0f , 2.0f };
     //
     // draw the 2d texture
     //
@@ -765,62 +630,9 @@ bool DrawScene()
     pcb = (ConstantBuffer*)mappedResource.pData;
     {
         memcpy(pcb->vQuadRect, quadRect, sizeof(float) * 4);
-        pcb->UseCase = 0;
     }
     g_pd3dDeviceContext->Unmap(g_pConstantBuffer, 0);
     g_pd3dDeviceContext->Draw(4, 0);
-
-        //
-    // draw a slice the 3d texture
-    //
-    quadRect[1] = 0.1f;
-#ifdef USEEFFECT
-    g_pUseCase->SetInt(1);
-    g_pvQuadRect->SetFloatVector((float*)&quadRect);
-    g_pSimpleTechnique->GetPassByIndex(0)->Apply(0, g_pd3dDeviceContext);
-#else
-    hr = g_pd3dDeviceContext->Map(g_pConstantBuffer, 0, D3D11_MAP_WRITE_DISCARD, 0, &mappedResource);
-    AssertOrQuit(SUCCEEDED(hr));
-    pcb = (ConstantBuffer*)mappedResource.pData;
-    {
-        memcpy(pcb->vQuadRect, quadRect, sizeof(float) * 4);
-        pcb->UseCase = 1;
-    }
-    g_pd3dDeviceContext->Unmap(g_pConstantBuffer, 0);
-#endif
-    g_pd3dDeviceContext->Draw(4, 0);
-
-    //
-    // draw the 6 faces of the cube texture
-    //
-    float faceRect[4] = { -0.1f, -0.9f, 0.5f, 0.5f };
-
-    for (int f = 0; f < 6; f++)
-    {
-        if (f == 3)
-        {
-            faceRect[0] += 0.55f;
-            faceRect[1] = -0.9f;
-        }
-
-#ifdef USEEFFECT
-        g_pUseCase->SetInt(2 + f);
-        g_pvQuadRect->SetFloatVector((float*)&faceRect);
-        g_pSimpleTechnique->GetPassByIndex(0)->Apply(0, g_pd3dDeviceContext);
-#else
-        hr = g_pd3dDeviceContext->Map(g_pConstantBuffer, 0, D3D11_MAP_WRITE_DISCARD, 0, &mappedResource);
-        AssertOrQuit(SUCCEEDED(hr));
-        pcb = (ConstantBuffer*)mappedResource.pData;
-        {
-            memcpy(pcb->vQuadRect, faceRect, sizeof(float) * 4);
-            pcb->UseCase = 2 + f;
-        }
-        g_pd3dDeviceContext->Unmap(g_pConstantBuffer, 0);
-#endif
-        g_pd3dDeviceContext->Draw(4, 0);
-        faceRect[1] += 0.6f;
-
-    }
 
     // Present the backbuffer contents to the display
     g_pSwapChain->Present(0, 0);
@@ -839,16 +651,6 @@ void Cleanup()
     cudaFree(g_texture_2d.cudaLinearMemory);
     getLastCudaError("cudaFree (g_texture_2d) failed");
 
-    cudaGraphicsUnregisterResource(g_texture_cube.cudaResource);
-    getLastCudaError("cudaGraphicsUnregisterResource (g_texture_cube) failed");
-    cudaFree(g_texture_cube.cudaLinearMemory);
-    getLastCudaError("cudaFree (g_texture_2d) failed");
-
-    cudaGraphicsUnregisterResource(g_texture_3d.cudaResource);
-    getLastCudaError("cudaGraphicsUnregisterResource (g_texture_3d) failed");
-    cudaFree(g_texture_3d.cudaLinearMemory);
-    getLastCudaError("cudaFree (g_texture_2d) failed");
-
     //
     // clean up Direct3D
     //
@@ -856,10 +658,6 @@ void Cleanup()
         // release the resources we created
         g_texture_2d.pSRView->Release();
         g_texture_2d.pTexture->Release();
-        g_texture_cube.pSRView->Release();
-        g_texture_cube.pTexture->Release();
-        g_texture_3d.pSRView->Release();
-        g_texture_3d.pTexture->Release();
 
         if (g_pInputLayout != NULL)
         {
@@ -921,12 +719,10 @@ void Render()
     {
         doit = true;
         cudaStream_t    stream = 0;
-        const int nbResources = 3;
+        const int nbResources = 1;
         cudaGraphicsResource* ppResources[nbResources] =
         {
             g_texture_2d.cudaResource,
-            g_texture_3d.cudaResource,
-            g_texture_cube.cudaResource,
         };
         cudaGraphicsMapResources(nbResources, ppResources, stream);
         getLastCudaError("cudaGraphicsMapResources(3) failed");

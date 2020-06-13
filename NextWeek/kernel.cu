@@ -30,7 +30,7 @@ void check_cuda(cudaError_t result, char const* const func, const char* const fi
 __device__ vec3 color(const ray& r, hitable** world, curandState* local_rand_state) {
     ray cur_ray = r;
     vec3 cur_attenuation = vec3(1.0, 1.0, 1.0);
-    for (int i = 0; i < 50; i++) {
+    for (int i = 0; i < 10; i++) {
         hit_record rec;
         if ((*world)->hit(cur_ray, 0.001f, FLT_MAX, rec)) {
             ray scattered;
@@ -68,11 +68,11 @@ __global__ void render_init(int max_x, int max_y, curandState* rand_state) {
     curand_init(1984, pixel_index, 0, &rand_state[pixel_index]);
 }
 
-__global__ void render(vec3* fb, int max_x, int max_y, int ns, camera** cam, hitable** world, curandState* rand_state) {
+__global__ void render(unsigned char* fb, int max_x, int max_y, int pitch, int ns, camera** cam, hitable** world, curandState* rand_state) {
     int i = threadIdx.x + blockIdx.x * blockDim.x;
     int j = threadIdx.y + blockIdx.y * blockDim.y;
     if ((i >= max_x) || (j >= max_y)) return;
-    int pixel_index = j * max_x + i;
+    int pixel_index = j * max_y + i;
     curandState local_rand_state = rand_state[pixel_index];
     vec3 col(0, 0, 0);
     for (int s = 0; s < ns; s++) {
@@ -81,12 +81,13 @@ __global__ void render(vec3* fb, int max_x, int max_y, int ns, camera** cam, hit
         ray r = (*cam)->get_ray(u, v, &local_rand_state);
         col += color(r, world, &local_rand_state);
     }
+    col /= (float)ns;
     rand_state[pixel_index] = local_rand_state;
-    col /= float(ns);
-    col[0] = sqrt(col[0]);
-    col[1] = sqrt(col[1]);
-    col[2] = sqrt(col[2]);
-    fb[pixel_index] = col;
+    float* pixel = (float*)(fb + j * pitch) + 4 * i;
+    pixel[0] = sqrt(col[0]);
+    pixel[1] = sqrt(col[1]);
+    pixel[2] = sqrt(col[2]);
+    pixel[3] = 1;
 }
 
 #define RND (curand_uniform(&local_rand_state))
@@ -118,7 +119,7 @@ __global__ void create_world(hitable** d_list, hitable** d_world, camera** d_cam
         d_list[i++] = new sphere(vec3(-4, 1, 0), 1.0, new lambertian(vec3(0.4, 0.2, 0.1)));
         d_list[i++] = new sphere(vec3(4, 1, 0), 1.0, new metal(vec3(0.7, 0.6, 0.5), 0.0));
         *rand_state = local_rand_state;
-        *d_world = new hitable_list(d_list, 22 * 22 + 1 + 3);
+        *d_world = new hitable_list(d_list, 4);
 
         vec3 lookfrom(13, 2, 3);
         vec3 lookat(0, 0, 0);
@@ -143,82 +144,98 @@ __global__ void free_world(hitable** d_list, hitable** d_world, camera** d_camer
     delete* d_camera;
 }
 
-//int main() {
-//    int nx = 1200;
-//    int ny = 800;
-//    int ns = 10;
-//    int tx = 8;
-//    int ty = 8;
-//
-//    std::cerr << "Rendering a " << nx << "x" << ny << " image with " << ns << " samples per pixel ";
-//    std::cerr << "in " << tx << "x" << ty << " blocks.\n";
-//
-//    int num_pixels = nx * ny;
-//    size_t fb_size = num_pixels * sizeof(vec3);
-//
-//    // allocate FB
-//    vec3* fb;
-//    checkCudaErrors(cudaMallocManaged((void**)&fb, fb_size));
-//
-//    // allocate random state
-//    curandState* d_rand_state;
-//    checkCudaErrors(cudaMalloc((void**)&d_rand_state, num_pixels * sizeof(curandState)));
-//    curandState* d_rand_state2;
-//    checkCudaErrors(cudaMalloc((void**)&d_rand_state2, 1 * sizeof(curandState)));
-//
-//    // we need that 2nd random state to be initialized for the world creation
-//    rand_init << <1, 1 >> > (d_rand_state2);
-//    checkCudaErrors(cudaGetLastError());
-//    checkCudaErrors(cudaDeviceSynchronize());
-//
-//    // make our world of hitables & the camera
-//    hitable** d_list;
-//    int num_hitables = 22 * 22 + 1 + 3;
-//    checkCudaErrors(cudaMalloc((void**)&d_list, num_hitables * sizeof(hitable*)));
-//    hitable** d_world;
-//    checkCudaErrors(cudaMalloc((void**)&d_world, sizeof(hitable*)));
-//    camera** d_camera;
-//    checkCudaErrors(cudaMalloc((void**)&d_camera, sizeof(camera*)));
-//    create_world << <1, 1 >> > (d_list, d_world, d_camera, nx, ny, d_rand_state2);
-//    checkCudaErrors(cudaGetLastError());
-//    checkCudaErrors(cudaDeviceSynchronize());
-//
-//    clock_t start, stop;
-//    start = clock();
-//    // Render our buffer
-//    dim3 blocks(nx / tx + 1, ny / ty + 1);
-//    dim3 threads(tx, ty);
-//    render_init << <blocks, threads >> > (nx, ny, d_rand_state);
-//    checkCudaErrors(cudaGetLastError());
-//    checkCudaErrors(cudaDeviceSynchronize());
-//    render << <blocks, threads >> > (fb, nx, ny, ns, d_camera, d_world, d_rand_state);
-//    checkCudaErrors(cudaGetLastError());
-//    checkCudaErrors(cudaDeviceSynchronize());
-//    stop = clock();
-//    double timer_seconds = ((double)(stop - start)) / CLOCKS_PER_SEC;
-//    std::cerr << "took " << timer_seconds << " seconds.\n";
-//
-//    // Output FB as Image
-//    std::cout << "P3\n" << nx << " " << ny << "\n255\n";
-//    for (int j = ny - 1; j >= 0; j--) {
-//        for (int i = 0; i < nx; i++) {
-//            size_t pixel_index = j * nx + i;
-//            int ir = int(255.99 * fb[pixel_index].r());
-//            int ig = int(255.99 * fb[pixel_index].g());
-//            int ib = int(255.99 * fb[pixel_index].b());
-//            std::cout << ir << " " << ig << " " << ib << "\n";
-//        }
-//    }
-//
-//    // clean up
-//    checkCudaErrors(cudaDeviceSynchronize());
-//    free_world << <1, 1 >> > (d_list, d_world, d_camera);
-//    checkCudaErrors(cudaGetLastError());
-//    checkCudaErrors(cudaFree(d_camera));
-//    checkCudaErrors(cudaFree(d_world));
-//    checkCudaErrors(cudaFree(d_list));
-//    checkCudaErrors(cudaFree(d_rand_state));
-//    checkCudaErrors(cudaFree(fb));
-//
-//    cudaDeviceReset();
-//}
+static int ns = 4;
+static int tx = 8;
+static int ty = 8;
+hitable** d_list;
+hitable** d_world;
+camera** d_camera;
+int num_hitables = 4;
+vec3* fb;
+curandState* d_rand_state;
+curandState* d_rand_state2;
+extern "C"
+void cuda_raytracing_init(int width, int height)
+{
+
+    int num_pixels = width * height;
+    size_t fb_size = num_pixels * sizeof(vec3);
+
+    // allocate FB
+    checkCudaErrors(cudaMallocManaged((void**)&fb, fb_size));
+
+    // allocate random state
+    checkCudaErrors(cudaMalloc((void**)&d_rand_state, num_pixels * sizeof(curandState)));
+    checkCudaErrors(cudaMalloc((void**)&d_rand_state2, 1 * sizeof(curandState)));
+    // make our world of hitables & the camera
+    
+    checkCudaErrors(cudaMalloc((void**)&d_list, num_hitables * sizeof(hitable*)));  
+    checkCudaErrors(cudaMalloc((void**)&d_world, sizeof(hitable*))); 
+    checkCudaErrors(cudaMalloc((void**)&d_camera, sizeof(camera*)));
+    create_world << <1, 1 >> > (d_list, d_world, d_camera, width, height, d_rand_state2);
+    checkCudaErrors(cudaGetLastError());
+    checkCudaErrors(cudaDeviceSynchronize());
+
+     //Render our buffer
+    dim3 blocks(width / tx + 1, height / ty + 1);
+    dim3 threads(tx, ty);
+    render_init << <blocks, threads >> > (width, height, d_rand_state);
+    checkCudaErrors(cudaGetLastError());
+    checkCudaErrors(cudaDeviceSynchronize());
+   
+}
+
+extern "C"
+void cuda_raytracing_release()
+{
+    free_world << <1, 1 >> > (d_list, d_world, d_camera);
+    checkCudaErrors(cudaGetLastError());
+    checkCudaErrors(cudaFree(d_camera));
+    checkCudaErrors(cudaFree(d_world));
+    checkCudaErrors(cudaFree(d_list));
+    checkCudaErrors(cudaFree(d_rand_state));
+    checkCudaErrors(cudaFree(fb));
+}
+
+__global__ void cuda_kernel_texture_2d(unsigned char* surface, int width, int height, size_t pitch, float t)
+{
+    int x = blockIdx.x * blockDim.x + threadIdx.x;
+    int y = blockIdx.y * blockDim.y + threadIdx.y;
+    float* pixel;
+
+    // in the case where, due to quantization into grids, we have
+    // more threads than pixels, skip the threads which don't
+    // correspond to valid pixels
+    if (x >= width || y >= height) return;
+
+    // get a pointer to the pixel at (x,y)
+    pixel = (float*)(surface + y * pitch) + 4 * x;
+
+    // populate it
+    // float value_x = 0.5f + 0.5f * cos(t + 10.0f * ((2.0f * x) / width - 1.0f));
+    // float value_y = 0.5f + 0.5f * cos(t + 10.0f * ((2.0f * y) / height - 1.0f));
+    pixel[0] = (float)x / width;
+    pixel[1] = (float)y / width;
+    pixel[2] = 0.5f;
+    pixel[3] = 1; // alpha
+}
+
+extern "C"
+void cuda_raytracing_render(void* surface, int width, int height, size_t pitch)
+{
+    cudaError_t error = cudaSuccess;
+
+    dim3 Db = dim3(tx, ty);   // block dimensions are fixed to be 256 threads
+    dim3 Dg = dim3((width + Db.x - 1) / Db.x, (height + Db.y - 1) / Db.y);
+
+    render << <Dg, Db >> > ((unsigned char*)surface, width, height, pitch, ns, d_camera, d_world, d_rand_state);
+    //cuda_kernel_texture_2d << <Dg, Db >> > ((unsigned char*)surface, width, height, pitch, 0.0f);
+    // cuda_kernel_texture_2d << <width, height >> > ((unsigned char*)surface, width, height, pitch, t);
+
+    error = cudaGetLastError();
+
+    if (error != cudaSuccess)
+    {
+        printf("cuda_kernel_texture_2d() failed to launch error = %d\n", error);
+    }
+}
