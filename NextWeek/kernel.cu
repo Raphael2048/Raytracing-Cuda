@@ -117,7 +117,8 @@ __global__ void create_world(hitable** d_list, hitable** d_world, camera** d_cam
         //}
         d_list[i++] = new sphere(vec3(0, 1, 0), 1.0, new dielectric(1.5));
         d_list[i++] = new sphere(vec3(-4, 1, 0), 1.0, new lambertian(vec3(0.4, 0.2, 0.1)));
-        d_list[i++] = new sphere(vec3(4, 1, 0), 1.0, new metal(vec3(0.7, 0.6, 0.5), 0.0));
+        //d_list[i++] = new sphere(vec3(4, 1, 0), 1.0, new metal(vec3(0.7, 0.6, 0.5), 0.0));
+        d_list[i++] = new moving_sphere(vec3(4, 1, 0), vec3(2, 1, 0), 0.0, 1.0, 1.0, new metal(vec3(0.7, 0.6, 0.5), 0.0));
         *rand_state = local_rand_state;
         *d_world = new hitable_list(d_list, 4);
 
@@ -131,7 +132,9 @@ __global__ void create_world(hitable** d_list, hitable** d_world, camera** d_cam
             30.0,
             float(nx) / float(ny),
             aperture,
-            dist_to_focus);
+            dist_to_focus,
+            0.0f, 
+            1.0f);
     }
 }
 
@@ -147,13 +150,13 @@ __global__ void free_world(hitable** d_list, hitable** d_world, camera** d_camer
 static int ns = 4;
 static int tx = 8;
 static int ty = 8;
-hitable** d_list;
-hitable** d_world;
-camera** d_camera;
-int num_hitables = 4;
-vec3* fb;
-curandState* d_rand_state;
-curandState* d_rand_state2;
+static hitable** d_list;
+static hitable** d_world;
+static camera** d_camera;
+static int num_hitables = 4;
+static vec3* fb;
+static curandState* d_rand_state;
+static curandState* d_rand_state2;
 extern "C"
 void cuda_raytracing_init(int width, int height)
 {

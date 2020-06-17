@@ -131,7 +131,6 @@ struct
 // The CUDA kernel launchers that get called
 extern "C"
 {
-    bool cuda_texture_2d(void* surface, size_t width, size_t height, size_t pitch, float t);
     void cuda_raytracing_init(int width, int height);
     void cuda_raytracing_render(void * surface, int width, int height, size_t pitch);
     void cuda_raytracing_release();
