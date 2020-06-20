@@ -9,6 +9,8 @@
 #include "hitable_list.h"
 #include "camera.h"
 #include "material.h"
+#include "aabb.h"
+#include "lbvh.h"
 
 // limited version of checkCudaErrors from helper_cuda.h in CUDA examples
 #define checkCudaErrors(val) check_cuda( (val), #val, __FILE__, __LINE__ )
@@ -19,6 +21,7 @@ void check_cuda(cudaError_t result, char const* const func, const char* const fi
             file << ":" << line << " '" << func << "' \n";
         // Make sure we call CUDA Device Reset before exiting
         cudaDeviceReset();
+        getchar();
         exit(99);
     }
 }
@@ -27,7 +30,7 @@ void check_cuda(cudaError_t result, char const* const func, const char* const fi
 // it was blowing up the stack, so we have to turn this into a
 // limited-depth loop instead.  Later code in the book limits to a max
 // depth of 50, so we adapt this a few chapters early on the GPU.
-__device__ vec3 color(const ray& r, hitable** world, curandState* local_rand_state) {
+__device__ vec3 color(const ray& r, lbvh** world, curandState* local_rand_state) {
     ray cur_ray = r;
     vec3 cur_attenuation = vec3(1.0, 1.0, 1.0);
     for (int i = 0; i < 10; i++) {
@@ -68,7 +71,7 @@ __global__ void render_init(int max_x, int max_y, curandState* rand_state) {
     curand_init(1984, pixel_index, 0, &rand_state[pixel_index]);
 }
 
-__global__ void render(unsigned char* fb, int max_x, int max_y, int pitch, int ns, camera** cam, hitable** world, curandState* rand_state) {
+__global__ void render(unsigned char* fb, int max_x, int max_y, size_t pitch, int ns, camera** cam, lbvh** world, curandState* rand_state) {
     int i = threadIdx.x + blockIdx.x * blockDim.x;
     int j = threadIdx.y + blockIdx.y * blockDim.y;
     if ((i >= max_x) || (j >= max_y)) return;
@@ -92,10 +95,10 @@ __global__ void render(unsigned char* fb, int max_x, int max_y, int pitch, int n
 
 #define RND (curand_uniform(&local_rand_state))
 
-__global__ void create_world(hitable** d_list, hitable** d_world, camera** d_camera, int nx, int ny, curandState* rand_state) {
+__global__ void create_world(hitable** d_list, lbvh** d_world, camera** d_camera, int nx, int ny, curandState* rand_state) {
     if (threadIdx.x == 0 && blockIdx.x == 0) {
         curandState local_rand_state = *rand_state;
-        d_list[0] = new sphere(vec3(0, -1000.0, -1), 1000,
+        d_list[0] = new sphere(vec3(0, -500, -1), 500,
             new lambertian(vec3(0.5, 0.5, 0.5)));
         int i = 1;
         //for (int a = -11; a < 11; a++) {
@@ -120,7 +123,8 @@ __global__ void create_world(hitable** d_list, hitable** d_world, camera** d_cam
         //d_list[i++] = new sphere(vec3(4, 1, 0), 1.0, new metal(vec3(0.7, 0.6, 0.5), 0.0));
         d_list[i++] = new moving_sphere(vec3(4, 1, 0), vec3(2, 1, 0), 0.0, 1.0, 1.0, new metal(vec3(0.7, 0.6, 0.5), 0.0));
         *rand_state = local_rand_state;
-        *d_world = new hitable_list(d_list, 4);
+        //*d_world = new hitable_list(d_list, 4);
+        *d_world = new lbvh(d_list, 4);
 
         vec3 lookfrom(13, 2, 3);
         vec3 lookat(0, 0, 0);
@@ -138,7 +142,7 @@ __global__ void create_world(hitable** d_list, hitable** d_world, camera** d_cam
     }
 }
 
-__global__ void free_world(hitable** d_list, hitable** d_world, camera** d_camera) {
+__global__ void free_world(hitable** d_list, lbvh** d_world, camera** d_camera) {
     for (int i = 0; i < 22 * 22 + 1 + 3; i++) {
         delete ((sphere*)d_list[i])->mat_ptr;
         delete d_list[i];
@@ -147,11 +151,25 @@ __global__ void free_world(hitable** d_list, hitable** d_world, camera** d_camer
     delete* d_camera;
 }
 
+
+__global__ void cal_aabb(lbvh** d_world) {
+    int id = blockIdx.x * blockDim.x + threadIdx.x;
+    if (id < (*d_world)->size()) {
+        (*d_world)->cal_aabb(id);
+    }
+}
+
+__global__ void radix_sort(lbvh** d_world) {
+    int id = threadIdx.x;
+    if (id < BUCKET_SIZE) {
+        (*d_world)->radix_sort(id);
+    }
+}
 static int ns = 4;
 static int tx = 8;
 static int ty = 8;
 static hitable** d_list;
-static hitable** d_world;
+static lbvh** d_world;
 static camera** d_camera;
 static int num_hitables = 4;
 static vec3* fb;
@@ -176,6 +194,15 @@ void cuda_raytracing_init(int width, int height)
     checkCudaErrors(cudaMalloc((void**)&d_world, sizeof(hitable*))); 
     checkCudaErrors(cudaMalloc((void**)&d_camera, sizeof(camera*)));
     create_world << <1, 1 >> > (d_list, d_world, d_camera, width, height, d_rand_state2);
+    checkCudaErrors(cudaGetLastError());
+    checkCudaErrors(cudaDeviceSynchronize());
+
+    //求每个物体的AABB及Morton code
+    cal_aabb<<<1, 16>>>(d_world);
+    checkCudaErrors(cudaGetLastError());
+    checkCudaErrors(cudaDeviceSynchronize());
+
+    radix_sort << < 1, BUCKET_SIZE >> > (d_world);
     checkCudaErrors(cudaGetLastError());
     checkCudaErrors(cudaDeviceSynchronize());
 
