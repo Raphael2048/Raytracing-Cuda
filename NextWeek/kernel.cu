@@ -58,17 +58,18 @@ __device__ vec3 color(const ray& r, lbvh** world, curandState* local_rand_state)
 
 __global__ void rand_init(curandState* rand_state) {
     if (threadIdx.x == 0 && blockIdx.x == 0) {
-        curand_init(1984, 0, 0, rand_state);
+        curand_init(1993, 0, 0, rand_state);
     }
 }
 
 __global__ void render_init(int max_x, int max_y, curandState* rand_state) {
     int i = threadIdx.x + blockIdx.x * blockDim.x;
-    int j = threadIdx.y + blockIdx.y * blockDim.y;
-    if ((i >= max_x) || (j >= max_y)) return;
-    int pixel_index = j * max_x + i;
+    //int j = threadIdx.y + blockIdx.y * blockDim.y;
+    //if ((i >= max_x) || (j >= max_y)) return;
+    if (i >= max_x) return;
+    //int pixel_index = j * max_x + i;
     //Each thread gets same seed, a different sequence number, no offset
-    curand_init(1984, pixel_index, 0, &rand_state[pixel_index]);
+    curand_init(1995, i, 0, &rand_state[i]);
 }
 
 __global__ void render(unsigned char* fb, int max_x, int max_y, size_t pitch, int ns, camera** cam, lbvh** world, curandState* rand_state) {
@@ -76,7 +77,7 @@ __global__ void render(unsigned char* fb, int max_x, int max_y, size_t pitch, in
     int j = threadIdx.y + blockIdx.y * blockDim.y;
     if ((i >= max_x) || (j >= max_y)) return;
     int pixel_index = j * max_y + i;
-    curandState local_rand_state = rand_state[pixel_index];
+    curandState local_rand_state = rand_state[i];
     vec3 col(0, 0, 0);
     for (int s = 0; s < ns; s++) {
         float u = float(i + curand_uniform(&local_rand_state)) / float(max_x);
@@ -85,7 +86,7 @@ __global__ void render(unsigned char* fb, int max_x, int max_y, size_t pitch, in
         col += color(r, world, &local_rand_state);
     }
     col /= (float)ns;
-    rand_state[pixel_index] = local_rand_state;
+    rand_state[i] = local_rand_state;
     float* pixel = (float*)(fb + j * pitch) + 4 * i;
     pixel[0] = sqrt(col[0]);
     pixel[1] = sqrt(col[1]);
@@ -98,33 +99,32 @@ __global__ void render(unsigned char* fb, int max_x, int max_y, size_t pitch, in
 __global__ void create_world(hitable** d_list, lbvh** d_world, camera** d_camera, int nx, int ny, curandState* rand_state) {
     if (threadIdx.x == 0 && blockIdx.x == 0) {
         curandState local_rand_state = *rand_state;
-        d_list[0] = new sphere(vec3(0, -500, -1), 500,
+        d_list[0] = new sphere(vec3(0, -200, -1.03), 200,
             new lambertian(vec3(0.5, 0.5, 0.5)));
         int i = 1;
-        //for (int a = -11; a < 11; a++) {
-        //    for (int b = -11; b < 11; b++) {
-        //        float choose_mat = RND;
-        //        vec3 center(a + RND, 0.2, b + RND);
-        //        if (choose_mat < 0.8f) {
-        //            d_list[i++] = new sphere(center, 0.2,
-        //                new lambertian(vec3(RND * RND, RND * RND, RND * RND)));
-        //        }
-        //        else if (choose_mat < 0.95f) {
-        //            d_list[i++] = new sphere(center, 0.2,
-        //                new metal(vec3(0.5f * (1.0f + RND), 0.5f * (1.0f + RND), 0.5f * (1.0f + RND)), 0.5f * RND));
-        //        }
-        //        else {
-        //            d_list[i++] = new sphere(center, 0.2, new dielectric(1.5));
-        //        }
-        //    }
-        //}
-        d_list[i++] = new sphere(vec3(0, 1, 0), 1.0, new dielectric(1.5));
-        d_list[i++] = new sphere(vec3(-4, 1, 0), 1.0, new lambertian(vec3(0.4, 0.2, 0.1)));
+        d_list[i++] = new sphere(vec3(0, 1.01, 0), 1.0, new dielectric(1.5));
+        d_list[i++] = new sphere(vec3(-4, 1.01, 0), 1.0, new lambertian(vec3(0.4, 0.2, 0.1)));
         //d_list[i++] = new sphere(vec3(4, 1, 0), 1.0, new metal(vec3(0.7, 0.6, 0.5), 0.0));
-        d_list[i++] = new moving_sphere(vec3(4, 1, 0), vec3(2, 1, 0), 0.0, 1.0, 1.0, new metal(vec3(0.7, 0.6, 0.5), 0.0));
+        d_list[i++] = new moving_sphere(vec3(4, 1.01, 0), vec3(2, 1, 0), 0.0, 1.0, 1.0, new metal(vec3(0.7, 0.6, 0.5), 0.0));
+        for (int a = -11; a < 11; a++) {
+            for (int b = -11; b < 11; b++) {
+                float choose_mat = RND;
+                vec3 center(a + RND * 0.5f, 0.2 + 0.05 * RND, b + RND * 0.5f);
+                if (choose_mat < 0.7f) {
+                    d_list[i++] = new sphere(center, 0.2,
+                        new lambertian(vec3(RND * RND, RND * RND, RND * RND)));
+                }
+                else if (choose_mat < 0.8f) {
+                    d_list[i++] = new sphere(center, 0.2,
+                        new metal(vec3(0.503f * (1.0f + RND), 0.501f * (1.0f + RND), 0.501f * (1.0f + RND)), 0.501f * RND));
+                }
+                else {
+                    d_list[i++] = new sphere(center, 0.201, new dielectric(1.5));
+                }
+            }
+        }
         *rand_state = local_rand_state;
-        //*d_world = new hitable_list(d_list, 4);
-        *d_world = new lbvh(d_list, 4);
+        *d_world = new lbvh(d_list, 200);
 
         vec3 lookfrom(13, 2, 3);
         vec3 lookat(0, 0, 0);
@@ -165,6 +165,14 @@ __global__ void radix_sort(lbvh** d_world) {
         (*d_world)->radix_sort(id);
     }
 }
+
+__global__ void cal_bvh(lbvh** d_world) {
+    int id = threadIdx.x * blockDim.y + threadIdx.y;
+    if (id < (*d_world)->size() - 1) {
+        (*d_world)->cal_hierarchy(id);
+    }
+}
+
 static int ns = 4;
 static int tx = 8;
 static int ty = 8;
@@ -193,12 +201,17 @@ void cuda_raytracing_init(int width, int height)
     checkCudaErrors(cudaMalloc((void**)&d_list, num_hitables * sizeof(hitable*)));  
     checkCudaErrors(cudaMalloc((void**)&d_world, sizeof(hitable*))); 
     checkCudaErrors(cudaMalloc((void**)&d_camera, sizeof(camera*)));
+
+    rand_init << <1, 1 >> > (d_rand_state2);
+    checkCudaErrors(cudaGetLastError());
+    checkCudaErrors(cudaDeviceSynchronize());
+
     create_world << <1, 1 >> > (d_list, d_world, d_camera, width, height, d_rand_state2);
     checkCudaErrors(cudaGetLastError());
     checkCudaErrors(cudaDeviceSynchronize());
 
     //求每个物体的AABB及Morton code
-    cal_aabb<<<1, 16>>>(d_world);
+    cal_aabb<<<1, 512>>>(d_world);
     checkCudaErrors(cudaGetLastError());
     checkCudaErrors(cudaDeviceSynchronize());
 
@@ -206,13 +219,19 @@ void cuda_raytracing_init(int width, int height)
     checkCudaErrors(cudaGetLastError());
     checkCudaErrors(cudaDeviceSynchronize());
 
+    cal_bvh << < 1, 512 >> > (d_world);
+    checkCudaErrors(cudaGetLastError());
+    checkCudaErrors(cudaDeviceSynchronize());
+
+    printf("INIT SUCCESS\n");
      //Render our buffer
     dim3 blocks(width / tx + 1, height / ty + 1);
-    dim3 threads(tx, ty);
+    dim3 threads(tx, 1);
     render_init << <blocks, threads >> > (width, height, d_rand_state);
     checkCudaErrors(cudaGetLastError());
     checkCudaErrors(cudaDeviceSynchronize());
    
+    printf("RANDOM INITED SUCCESS\n");
 }
 
 extern "C"

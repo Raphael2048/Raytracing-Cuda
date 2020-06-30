@@ -6,21 +6,18 @@
 class hitable_node {
 public:
     hitable* hit;
-    aabb aabb;
+    aabb box;
     int morton_code;
 };
 
 class lbvh_node {
 public:
     aabb bounds;
-    union {
-        int index; //叶子节点
-        int second_child; // 内部节点,记录第二个child节点索引
-    };
-    union {
-        int count : 30; //内部节点, 节点数之和
-        int axis : 2; //分割轴 0,1,2 XYZ
-    };
+    int left;
+    int right;
+    bool built;
+    bool left_leaf;
+    bool right_leaf;
 };
 
 __device__ static inline uint32_t LeftShift3(uint32_t x) {
@@ -42,15 +39,9 @@ constexpr int PASSES = 30 / BUCKET_BITS;
 
 class lbvh{
     hitable_node* list;
+    lbvh_node* bvh;
     int list_size;
     aabb bound_all;
-    //基数排序后的索引值
-    int* sorted_nodes;
-    //这些是基数排序用,直接写在类里面了
-    //int* radix_sort_list;
-    //int* radix_sort_temp;
-    //int* radix_prefix_sum;
-    //int minx, miny, minz, maxx, maxy, maxz;
 public:
     __device__ lbvh() {}
     __device__ lbvh(hitable** l, int n) {
@@ -69,8 +60,8 @@ public:
 
     //计算每个节点的aabb
     __device__ void cal_aabb(int index) {
-        list[index].hit->bounding_box(0, 1, list[index].aabb);
-        aabb* p = &(list[index].aabb);
+        list[index].hit->bounding_box(0, 1, list[index].box);
+        aabb* p = &(list[index].box);
 
         __shared__ int minx, miny, minz, maxx, maxy, maxz;
         if (index == 0) {
@@ -97,19 +88,17 @@ public:
         __syncthreads();
 
         cal_morton_code(index);
-
-
     }
 
     __device__ void cal_morton_code(int index) {
-        vec3 center = (list[index].aabb.min() + list[index].aabb.max()) / 2;
-        printf("%f %f %f \n", center.x(), center.y(), center.z());
+        vec3 center = (list[index].box.min() + list[index].box.max()) / 2;
+        //printf("%f %f %f \n", center.x(), center.y(), center.z());
         vec3 offset = bound_all.offset(center);
-        printf("%f %f %f \n", offset.x(), offset.y(), offset.z());
+        //printf("%f %f %f \n", offset.x(), offset.y(), offset.z());
         constexpr int mortonBits = 10;
         constexpr int mortonScale = 1 << mortonBits;
         list[index].morton_code = EncodeMorton3(mortonScale * offset);
-        printf("%d\n", list[index].morton_code);
+        //printf("%d\n", list[index].morton_code);
     }
 
     //傻瓜版并行基数排序,考虑到几何体数量过少,不用分片分区的复杂高级算法 5次PASS完成
@@ -183,28 +172,165 @@ public:
             //__syncthreads();
         }
 
+        //拷贝到新的list,排序完成
         if (index == 0) {
-            sorted_nodes = (PASSES & 1) ? radix_sort_temp : radix_sort_list;
-            free ((PASSES & 1) ? radix_sort_list : radix_sort_temp);
-            free(radix_prefix_sum);
+            hitable_node* old_list = list;
+            list = (hitable_node*)malloc(sizeof(hitable_node) * list_size);
+            int* result = (PASSES & 1) ? radix_sort_temp : radix_sort_list;
             for (int i = 0; i < list_size; i++) {
-                printf("%d\n", list[sorted_nodes[i]].morton_code);
+                list[i] = hitable_node(old_list[result[i]]);
+                //printf("%d\n", list[sorted_nodes[i]].morton_code);
+                printf("%x\n", list[i].morton_code);
             }
+            free(radix_sort_list);
+            free(radix_sort_temp);
+            free(radix_prefix_sum);
+            free(old_list);
+        }
+        __syncthreads();
+        
+        //__syncthreads();
+        //if (index == 0) {
+        //    //free(radix_sort_list);
+        //    //free(radix_sort_temp);
+        //    //sorted_nodes = (PASSES & 1) ? radix_sort_temp : radix_sort_list;
+        //    //free ((PASSES & 1) ? radix_sort_list : radix_sort_temp);
+        //    //free(radix_prefix_sum);
+        //    for (int i = 0; i < list_size; i++) {
+        //        printf("%d\n", list[i].morton_code);
+        //    }
+        //}
+    }
+
+    //最长公共前缀位数
+    __device__ int delta(int i, int j) {
+        if (j < 0 || j >= list_size) {
+            return -1;
+        }
+        else {
+            int a = list[i].morton_code;
+            int b = list[i].morton_code;
+            if (a == b) {
+                return 32 + __clz(i ^ j);
+            }
+            else {
+                return __clz(a ^ b);
+            }
+
+        }
+    }
+    __device__ inline int min(int i, int j) {
+        return i < j ? i : j;
+    }
+    __device__ inline int max(int i, int j) {
+        return i < j ? j : i;
+    }
+    // https://developer.nvidia.com/blog/thinking-parallel-part-iii-tree-construction-gpu/
+    // https://developer.nvidia.com/blog/parallelforall/wp-content/uploads/2012/11/karras2012hpg_paper.pdf
+    //平行化生成BVH, 对于每一个内部节点
+    __device__ void cal_hierarchy(int i) {
+        if (i == 0) {
+            bvh = (lbvh_node*)malloc(sizeof(lbvh_node) * (list_size - 1));
+        }
+        __syncthreads();
+        int d = (delta(i, i + 1) - delta(i, i - 1)) >= 0 ? 1 : -1;
+        int delta_min = delta(i, i - d);
+        int l_max = 2;
+        while (delta(i, i + l_max * d) > delta_min) {
+            l_max = l_max * 2;
+        }
+        int l = 0;
+        for (int t = l_max / 2; t != 0; t = t / 2) {
+            if (delta(i, i + (l + t) * d) > delta_min) {
+                l = l + t;
+            }
+        }
+        int j = i + l * d;
+        int delta_node = delta(i, j);
+        int s = 0;
+        for (int t = l / 2; t != 0; t /= 2) {
+            if (delta(i, i + (s + t) * d) > delta_node) {
+                s = s + t;
+            }
+        }
+        int gamma = i + s * d + min(d, 0);
+        //printf("%d %d %d\n", i, j, gamma);
+        bvh[i].left = gamma;
+        bvh[i].left_leaf = (min(i, j) == gamma);
+        bvh[i].right = gamma + 1;
+        bvh[i].right_leaf = (max(i, j) == (gamma + 1));
+        bvh[i].built = false;
+        __syncthreads();
+        if (i == 0) {
+            for (int k = 0; k < list_size - 1; k++) {
+                printf("%d = %d - %d ( %d %d )\n", k, bvh[k].left,bvh[k].right, bvh[k].left_leaf, bvh[k].right_leaf);
+            }
+        }
+        __syncthreads();
+        while (!bvh[0].built)
+        {
+            if (!bvh[i].built) {
+                if (bvh[i].left_leaf && bvh[i].right_leaf) {
+                    bvh[i].bounds = surrounding_box(list[bvh[i].left].box, list[bvh[i].right].box);
+                    bvh[i].built = true;
+                }
+                else if (bvh[i].left_leaf) {
+                    // 等待...
+                    if (bvh[bvh[i].right].built) {
+                        bvh[i].bounds = surrounding_box(list[bvh[i].left].box, bvh[bvh[i].right].bounds);
+                        bvh[i].built = true;
+                    }
+                }
+                else if (bvh[i].right_leaf) {
+                    // 等待...
+                    if (bvh[bvh[i].left].built) {
+                        bvh[i].bounds = surrounding_box(bvh[bvh[i].left].bounds, list[bvh[i].right].box);
+                        bvh[i].built = true;
+                    }
+                }
+                else {
+                    if (bvh[bvh[i].left].built && bvh[bvh[i].right].built) {
+                        bvh[i].bounds = surrounding_box(bvh[bvh[i].left].bounds, bvh[bvh[i].right].bounds);
+                        bvh[i].built = true;
+                    }
+                }
+            }
+            __syncthreads();
+        }
+        if (i == 0) {
+            for (int k = 0; k < list_size - 1; k++) {
+                printf("%f %f %f ~ %f %f %f\n", bvh[k].bounds.min().x(), bvh[k].bounds.min().x(), bvh[k].bounds.min().x(),
+                    bvh[k].bounds.max().x(), bvh[k].bounds.max().x(), bvh[k].bounds.max().x());
+            }
+        }
+        __syncthreads();
+    }
+
+    __device__ bool lbvh::hit(const ray& r, float t_min, float t_max, hit_record& rec, int index, bool isleaf) const {
+        if (isleaf) {
+            if (list[index].hit->hit(r, t_min, t_max, rec)) {
+                return true;
+            }
+        }
+        else {
+            bool hited = false;
+            float closed = t_max;
+            hit_record temp_rec;
+            if (this->hit(r, t_min, closed, temp_rec, bvh[index].left, bvh[index].left_leaf)) {
+                closed = temp_rec.t;
+                hited = true;
+                rec = temp_rec;
+            }
+            if (this->hit(r, t_min, closed, temp_rec, bvh[index].right, bvh[index].right_leaf)) {
+                hited = true;
+                rec = temp_rec;
+            }
+            return hited;
         }
     }
 
     __device__ bool lbvh::hit(const ray& r, float t_min, float t_max, hit_record& rec) const {
-        hit_record temp_rec;
-        bool hit_anything = false;
-        float closest_so_far = t_max;
-        for (int i = 0; i < list_size; i++) {
-            if (list[i].hit->hit(r, t_min, closest_so_far, temp_rec)) {
-                hit_anything = true;
-                closest_so_far = temp_rec.t;
-                rec = temp_rec;
-            }
-        }
-        return hit_anything;
+        return this->hit(r, t_min, t_max, rec, 0, false);
     }
 };
 
