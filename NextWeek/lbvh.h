@@ -327,6 +327,7 @@ public:
             }
             return hited;
         }
+        return false;
     }
 
     __device__ bool lbvh::hit(const ray& r, float t_min, float t_max, hit_record& rec) const {
