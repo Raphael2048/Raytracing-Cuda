@@ -106,16 +106,22 @@ __global__ void render(unsigned char* fb, int max_x, int max_y, size_t pitch, in
 __global__ void create_world(hitable** d_list, lbvh** d_world, camera** d_camera, int nx, int ny, curandState* rand_state) {
     if (threadIdx.x == 0 && blockIdx.x == 0) {
         curandState local_rand_state = *rand_state;
+        perlin* noise = new perlin();
+        noise->init(&local_rand_state);
+        //d_list[0] = new sphere(vec3(0, -200, -1.03), 200,
+        //    new lambertian(new checker_texture(
+        //        new constant_texture(vec3(0.2, 0.3, 0.1)),
+        //            new constant_texture(vec3(0.9, 0.9, 0.9)))));
+        texture_base* pertext = new noise_texture(noise);
         d_list[0] = new sphere(vec3(0, -200, -1.03), 200,
-            new lambertian(new checker_texture(
-                new constant_texture(vec3(0.2, 0.3, 0.1)),
-                    new constant_texture(vec3(0.9, 0.9, 0.9)))));
+            new lambertian(pertext));
         int i = 1;
         d_list[i++] = new sphere(vec3(0.01, 1.01, 0.03), 1.02, new dielectric(1.5));
         d_list[i++] = new sphere(vec3(-4.03, 1.03, 0.02), 1.0, new lambertian(new constant_texture(vec3(0.4, 0.2, 0.1))));
-        d_list[i++] = new sphere(vec3(4.01, 0.98, 0.01), 1.0, new metal(vec3(0.7, 0.6, 0.5), 0.0));
+        //d_list[i++] = new sphere(vec3(4.01, 0.98, 0.01), 1.0, new metal(vec3(0.7, 0.6, 0.5), 0.0));
+        d_list[i++] = new sphere(vec3(4.01, 0.98, 0.01), 1.0, new lambertian(pertext));
         //d_list[i++] = new moving_sphere(vec3(4, 1.01, 0), vec3(2, 1, 0), 0.0, 1.0, 1.0, new metal(vec3(0.7, 0.6, 0.5), 0.0));
-        for (int a = -11; a < 11; a++) {
+        for (int a = -11; a < 11; a++) {  
             for (int b = -11; b < 11; b++) {
                 float choose_mat = RND;
                 vec3 center(a + RND * 0.5f, 0.2 + 0.05 * RND, b + RND * 0.5f);
@@ -133,7 +139,7 @@ __global__ void create_world(hitable** d_list, lbvh** d_world, camera** d_camera
             }
         }
         *rand_state = local_rand_state;
-        *d_world = new lbvh(d_list, 20);
+        *d_world = new lbvh(d_list, 4);
 
         vec3 lookfrom(13, 2, 3);
         vec3 lookat(0, 0, 0);
