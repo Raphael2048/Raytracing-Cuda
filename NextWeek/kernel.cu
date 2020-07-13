@@ -3,6 +3,7 @@
 #include <float.h>
 #include <curand_kernel.h>
 #include <math_constants.h>
+//#include <helper_functions.h>
 #include "vec3.h"
 #include "ray.h"
 #include "sphere.h"
@@ -103,7 +104,7 @@ __global__ void render(unsigned char* fb, int max_x, int max_y, size_t pitch, in
 
 #define RND (curand_uniform(&local_rand_state))
 
-__global__ void create_world(hitable** d_list, lbvh** d_world, camera** d_camera, int nx, int ny, curandState* rand_state) {
+__global__ void create_world(hitable** d_list, lbvh** d_world, camera** d_camera, int nx, int ny, curandState* rand_state, unsigned char * d_pixels, int image_width, int image_height) {
     if (threadIdx.x == 0 && blockIdx.x == 0) {
         curandState local_rand_state = *rand_state;
         perlin* noise = new perlin();
@@ -113,13 +114,14 @@ __global__ void create_world(hitable** d_list, lbvh** d_world, camera** d_camera
         //        new constant_texture(vec3(0.2, 0.3, 0.1)),
         //            new constant_texture(vec3(0.9, 0.9, 0.9)))));
         texture_base* pertext = new noise_texture(noise);
+        texture_base* imagetxt = new image_texture(d_pixels, image_width, image_height);
         d_list[0] = new sphere(vec3(0, -200, -1.03), 200,
             new lambertian(pertext));
         int i = 1;
         d_list[i++] = new sphere(vec3(0.01, 1.01, 0.03), 1.02, new dielectric(1.5));
         d_list[i++] = new sphere(vec3(-4.03, 1.03, 0.02), 1.0, new lambertian(new constant_texture(vec3(0.4, 0.2, 0.1))));
         //d_list[i++] = new sphere(vec3(4.01, 0.98, 0.01), 1.0, new metal(vec3(0.7, 0.6, 0.5), 0.0));
-        d_list[i++] = new sphere(vec3(4.01, 0.98, 0.01), 1.0, new lambertian(pertext));
+        d_list[i++] = new sphere(vec3(4.01, 0.98, 0.01), 1.0, new lambertian(imagetxt));
         //d_list[i++] = new moving_sphere(vec3(4, 1.01, 0), vec3(2, 1, 0), 0.0, 1.0, 1.0, new metal(vec3(0.7, 0.6, 0.5), 0.0));
         for (int a = -11; a < 11; a++) {  
             for (int b = -11; b < 11; b++) {
@@ -198,6 +200,22 @@ static int num_hitables = 4;
 static vec3* fb;
 static curandState* d_rand_state;
 static curandState* d_rand_state2;
+static unsigned char* d_pixels;
+static int image_width = 0;
+static int image_height = 0;
+
+extern "C"
+void cuda_init_texture(int width, int height, unsigned char* pixels)
+{
+    cudaChannelFormatDesc desc = cudaCreateChannelDesc<unsigned char>();
+    unsigned char** d;
+    size_t size = width * height * 4 * sizeof(unsigned char);
+    cudaMallocManaged(&d_pixels, size);
+    cudaMemcpy(d_pixels, pixels, size, cudaMemcpyHostToDevice);
+    image_width = width;
+    image_height = height;
+}
+
 extern "C"
 void cuda_raytracing_init(int width, int height)
 {
@@ -221,7 +239,7 @@ void cuda_raytracing_init(int width, int height)
     checkCudaErrors(cudaGetLastError());
     checkCudaErrors(cudaDeviceSynchronize());
 
-    create_world << <1, 1 >> > (d_list, d_world, d_camera, width, height, d_rand_state2);
+    create_world << <1, 1 >> > (d_list, d_world, d_camera, width, height, d_rand_state2, d_pixels, image_width, image_height);
     checkCudaErrors(cudaGetLastError());
     checkCudaErrors(cudaDeviceSynchronize());
 
@@ -261,29 +279,6 @@ void cuda_raytracing_release()
     checkCudaErrors(cudaFree(fb));
 }
 
-__global__ void cuda_kernel_texture_2d(unsigned char* surface, int width, int height, size_t pitch, float t)
-{
-    int x = blockIdx.x * blockDim.x + threadIdx.x;
-    int y = blockIdx.y * blockDim.y + threadIdx.y;
-    float* pixel;
-
-    // in the case where, due to quantization into grids, we have
-    // more threads than pixels, skip the threads which don't
-    // correspond to valid pixels
-    if (x >= width || y >= height) return;
-
-    // get a pointer to the pixel at (x,y)
-    pixel = (float*)(surface + y * pitch) + 4 * x;
-
-    // populate it
-    // float value_x = 0.5f + 0.5f * cos(t + 10.0f * ((2.0f * x) / width - 1.0f));
-    // float value_y = 0.5f + 0.5f * cos(t + 10.0f * ((2.0f * y) / height - 1.0f));
-    pixel[0] = (float)x / width;
-    pixel[1] = (float)y / width;
-    pixel[2] = 0.5f;
-    pixel[3] = 1; // alpha
-}
-
 extern "C"
 void cuda_raytracing_render(void* surface, int width, int height, size_t pitch)
 {
@@ -293,8 +288,6 @@ void cuda_raytracing_render(void* surface, int width, int height, size_t pitch)
     dim3 Dg = dim3((width + Db.x - 1) / Db.x, (height + Db.y - 1) / Db.y);
 
     render << <Dg, Db >> > ((unsigned char*)surface, width, height, pitch, ns, d_camera, d_world, d_rand_state);
-    //cuda_kernel_texture_2d << <Dg, Db >> > ((unsigned char*)surface, width, height, pitch, 0.0f);
-    // cuda_kernel_texture_2d << <width, height >> > ((unsigned char*)surface, width, height, pitch, t);
 
     error = cudaGetLastError();
 

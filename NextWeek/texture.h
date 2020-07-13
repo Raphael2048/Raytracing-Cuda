@@ -64,9 +64,6 @@ public:
 		perm_x = perlin_generate_perm(state);
 		perm_y = perlin_generate_perm(state);
 		perm_z = perlin_generate_perm(state);
-		for (int i = 0; i < 256; i++) {
-			printf("%f\n", ranfloat[i]);
-		}
 	}
 
 	__device__  float noise(const vec3& p) const {
@@ -115,6 +112,28 @@ public:
 		//return vec3(1, 1, 1) * 0.5 * (1 + noise->noise(p * 10));
 		//return vec3(1, 1, 1) * noise->turb(p * 10);
 		return vec3(1, 1, 1) * 0.5 * (1 + sinf(10 * p.z() + 10 * noise->turb(p)));
+	}
+};
+
+class image_texture : public texture_base {
+	unsigned char * data;
+	int nx, ny;
+public:
+	__device__ image_texture() {}
+	__device__ image_texture(unsigned char * pixels, int A, int B): data(pixels), nx(A), ny(B){}
+
+	__device__ vec3 image_texture::value(float u, float v, const vec3& p) const {
+		int i = u * nx;
+		int j = (1 - v) * ny - 0.001;
+		i = i < 0 ? 0 : i;
+		j = j < 0 ? 0 : j;
+		i = i > nx - 1 ? nx - 1 : i;
+		j = j > ny - 1 ? ny - 1 : j;
+		float r = int(data[4 * i + 4 * nx * j]) / 255.0;
+		float g = int(data[4 * i + 4 * nx * j + 1]) / 255.0;
+		float b = int(data[4 * i + 4 * nx * j + 2]) / 255.0;
+		return vec3(r, g, b);
+		//return vec3(1 / 255.0, 1, 1);
 	}
 };
 #endif

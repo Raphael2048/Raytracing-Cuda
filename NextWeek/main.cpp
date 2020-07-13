@@ -131,6 +131,7 @@ struct
 // The CUDA kernel launchers that get called
 extern "C"
 {
+    void cuda_init_texture(int width, int height, unsigned char* pixels);
     void cuda_raytracing_init(int width, int height);
     void cuda_raytracing_render(void * surface, int width, int height, size_t pitch);
     void cuda_raytracing_release();
@@ -333,6 +334,25 @@ int main(int argc, char* argv[])
         getLastCudaError("cudaMallocPitch (g_texture_2d) failed");
         cudaMemset(g_texture_2d.cudaLinearMemory, 1, g_texture_2d.pitch * g_texture_2d.height);
     }
+
+
+    printf("Reading image: lenaRGB.ppm\n");
+    const char* image_filename = "lenaRGB.ppm";
+    char* image_path = sdkFindFilePath(image_filename, nullptr);
+    if (image_path == NULL)
+    {
+        printf("Failed to read image file: <%s>\n", image_filename);
+        exit(EXIT_FAILURE);
+    }
+    unsigned int w, h;
+    unsigned char* pixels = nullptr;
+    if (sdkLoadPPM4<unsigned char>(image_path, &pixels, &w, &h) != true)
+    {
+        printf("Failed to load PGM image file: %s\n", image_path);
+        getchar();
+        exit(EXIT_FAILURE);
+    }
+    cuda_init_texture(w, h, pixels);
 
 
     cuda_raytracing_init(g_texture_2d.width, g_texture_2d.height);

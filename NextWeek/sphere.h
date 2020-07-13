@@ -3,6 +3,13 @@
 
 #include "hitable.h"
 
+__device__ static void get_sphere_uv(const vec3& p, float& u, float& v) {
+    float phi = atan2f(p.z(), p.x());
+    float thelta = asinf(p.y());
+    u = 1 - (phi + CUDART_PI) / (CUDART_PI * 2);
+    v = (thelta + CUDART_PIO2) / CUDART_PI;
+}
+
 class sphere: public hitable  {
     public:
         __device__ sphere() {}
@@ -27,6 +34,7 @@ __device__ bool sphere::hit(const ray& r, float t_min, float t_max, hit_record& 
             rec.p = r.point_at_parameter(rec.t);
             rec.normal = (rec.p - center) / radius;
             rec.mat_ptr = mat_ptr;
+            get_sphere_uv(rec.normal, rec.u, rec.v);
             return true;
         }
         temp = (-b + sqrt(discriminant)) / a;
@@ -35,6 +43,7 @@ __device__ bool sphere::hit(const ray& r, float t_min, float t_max, hit_record& 
             rec.p = r.point_at_parameter(rec.t);
             rec.normal = (rec.p - center) / radius;
             rec.mat_ptr = mat_ptr;
+            get_sphere_uv(rec.normal, rec.u, rec.v);
             return true;
         }
     }
