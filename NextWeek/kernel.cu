@@ -13,6 +13,7 @@
 #include "aabb.h"
 #include "lbvh.h"
 #include "texture.h"
+#include "rectangle.h"
 
 // limited version of checkCudaErrors from helper_cuda.h in CUDA examples
 #define checkCudaErrors(val) check_cuda( (val), #val, __FILE__, __LINE__ )
@@ -35,24 +36,26 @@ void check_cuda(cudaError_t result, char const* const func, const char* const fi
 __device__ vec3 color(const ray& r, lbvh** world, curandState* local_rand_state) {
     ray cur_ray = r;
     vec3 cur_attenuation = vec3(1.0, 1.0, 1.0);
+    vec3 cur_sum = vec3(0.0, 0.0, 0.0);
     for (int i = 0; i < 10; i++) {
         hit_record rec;
         if ((*world)->hit(cur_ray, 0.001f, FLT_MAX, rec)) {
+            vec3 emitted = rec.mat_ptr->emitted(rec.u, rec.v, rec.p);
+            cur_sum += emitted * cur_attenuation;
+
             ray scattered;
             vec3 attenuation;
             if (rec.mat_ptr->scatter(cur_ray, rec, attenuation, scattered, local_rand_state)) {
-                cur_attenuation *= attenuation;
+                cur_attenuation = cur_attenuation * attenuation;
                 cur_ray = scattered;
             }
             else {
-                return vec3(0.0, 0.0, 0.0);
+                return cur_sum;
             }
         }
         else {
-            vec3 unit_direction = unit_vector(cur_ray.direction());
-            float t = 0.5f * (unit_direction.y() + 1.0f);
-            vec3 c = (1.0f - t) * vec3(1.0, 1.0, 1.0) + t * vec3(0.5, 0.7, 1.0);
-            return cur_attenuation * c;
+            //没有天空光
+            return vec3(0.0, 0.0, 0.0);
         }
     }
     return vec3(0.0, 0.0, 0.0); // exceeded recursion
@@ -109,48 +112,31 @@ __global__ void create_world(hitable** d_list, lbvh** d_world, camera** d_camera
         curandState local_rand_state = *rand_state;
         perlin* noise = new perlin();
         noise->init(&local_rand_state);
-        //d_list[0] = new sphere(vec3(0, -200, -1.03), 200,
-        //    new lambertian(new checker_texture(
-        //        new constant_texture(vec3(0.2, 0.3, 0.1)),
-        //            new constant_texture(vec3(0.9, 0.9, 0.9)))));
+
+        material* red = new lambertian(new constant_texture(vec3(0.65, 0.05, 0.05)));
+        material* white = new lambertian(new constant_texture(vec3(0.73, 0.73, 0.73)));
+        material* green = new lambertian(new constant_texture(vec3(0.12, 0.45, 0.15)));
+        material* light = new diffuse_light(new constant_texture(vec3(15, 15, 15)));
+
         texture_base* pertext = new noise_texture(noise);
         texture_base* imagetxt = new image_texture(d_pixels, image_width, image_height);
-        d_list[0] = new sphere(vec3(0, -200, -1.03), 200,
-            new lambertian(pertext));
-        int i = 1;
-        d_list[i++] = new sphere(vec3(0.01, 1.01, 0.03), 1.02, new dielectric(1.5));
-        d_list[i++] = new sphere(vec3(-4.03, 1.03, 0.02), 1.0, new lambertian(new constant_texture(vec3(0.4, 0.2, 0.1))));
-        //d_list[i++] = new sphere(vec3(4.01, 0.98, 0.01), 1.0, new metal(vec3(0.7, 0.6, 0.5), 0.0));
-        d_list[i++] = new sphere(vec3(4.01, 0.98, 0.01), 1.0, new lambertian(imagetxt));
-        //d_list[i++] = new moving_sphere(vec3(4, 1.01, 0), vec3(2, 1, 0), 0.0, 1.0, 1.0, new metal(vec3(0.7, 0.6, 0.5), 0.0));
-        for (int a = -11; a < 11; a++) {  
-            for (int b = -11; b < 11; b++) {
-                float choose_mat = RND;
-                vec3 center(a + RND * 0.5f, 0.2 + 0.05 * RND, b + RND * 0.5f);
-                if (choose_mat < 0.7f) {
-                    d_list[i++] = new sphere(center, 0.2,
-                        new lambertian(new constant_texture( vec3(RND * RND, RND * RND, RND * RND))));
-                }
-                else if (choose_mat < 0.8f) {
-                    d_list[i++] = new sphere(center, 0.2,
-                        new metal(vec3(0.503f * (1.0f + RND), 0.501f * (1.0f + RND), 0.501f * (1.0f + RND)), 0.501f * RND));
-                }
-                else {
-                    d_list[i++] = new sphere(center, 0.201, new dielectric(1.5));
-                }
-            }
-        }
+        d_list[0] = new yz_rect(0, 555, 0, 555, 555, green);
+        d_list[1] = new yz_rect(0, 555, 0, 555, 0, red);
+        d_list[2] = new xz_rect(213, 343, 227, 332, 554, light);
+        d_list[3] = new xz_rect(0, 555, 0, 555, 555, white);
+        d_list[4] = new xz_rect(0, 555, 0, 555, 0, white);
+        d_list[5] = new xy_rect(0, 555, 0, 555, 550, white);
         *rand_state = local_rand_state;
-        *d_world = new lbvh(d_list, 4);
+        *d_world = new lbvh(d_list, 6);
 
-        vec3 lookfrom(13, 2, 3);
-        vec3 lookat(0, 0, 0);
-        float dist_to_focus = 10.0; (lookfrom - lookat).length();
-        float aperture = 0.1;
+        vec3 lookfrom(278, 278, -800);
+        vec3 lookat(278, 278, 0);
+        float dist_to_focus = 10.0;
+        float aperture = 0.0;
         *d_camera = new camera(lookfrom,
             lookat,
             vec3(0, 1, 0),
-            30.0,
+            40.0,
             float(nx) / float(ny),
             aperture,
             dist_to_focus,

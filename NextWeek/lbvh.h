@@ -79,8 +79,15 @@ public:
         __syncthreads();
 
         if (index == 0) {
+
+            //for (int i = 0; i < list_size; i++) {
+            //    printf("%d\n", i);
+            //    printf("%f %f %f \n", list[i].box.min().x(), list[i].box.min().y(), list[i].box.min().z());
+            //    printf("%f %f %f \n", list[i].box.max().x(), list[i].box.max().y(), list[i].box.max().z());
+            //}
+
             vec3 min = vec3(minx - 1, miny - 1, minz - 1);
-            vec3 max = vec3(maxx - 1, maxy - 1, maxz - 1);
+            vec3 max = vec3(maxx + 1, maxy + 1, maxz + 1);
             bound_all = aabb(min, max);
             printf("%f %f %f \n", bound_all.min().x(), bound_all.min().y(), bound_all.min().z());
             printf("%f %f %f \n", bound_all.max().x(), bound_all.max().y(), bound_all.max().z());
@@ -98,7 +105,7 @@ public:
         constexpr int mortonBits = 10;
         constexpr int mortonScale = 1 << mortonBits;
         list[index].morton_code = EncodeMorton3(mortonScale * offset);
-        //printf("%d\n", list[index].morton_code);
+        //printf("%d == %d\n", index, list[index].morton_code);
     }
 
     //傻瓜版并行基数排序,考虑到几何体数量过少,不用分片分区的复杂高级算法 5次PASS完成
@@ -299,8 +306,8 @@ public:
         }
         if (i == 0) {
             for (int k = 0; k < list_size - 1; k++) {
-                printf("%f %f %f ~ %f %f %f\n", bvh[k].bounds.min().x(), bvh[k].bounds.min().x(), bvh[k].bounds.min().x(),
-                    bvh[k].bounds.max().x(), bvh[k].bounds.max().x(), bvh[k].bounds.max().x());
+                printf("%f %f %f ~ %f %f %f\n", bvh[k].bounds.min().x(), bvh[k].bounds.min().y(), bvh[k].bounds.min().z(),
+                    bvh[k].bounds.max().x(), bvh[k].bounds.max().y(), bvh[k].bounds.max().z());
             }
         }
         __syncthreads();
